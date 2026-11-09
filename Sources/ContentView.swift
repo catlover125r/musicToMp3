@@ -66,7 +66,7 @@ struct ContentView: View {
                     Text("Search")
                         .font(.caption).fontWeight(.medium).foregroundColor(.secondary)
                     Spacer()
-                    Text("One song per line — Enter adds a line, button submits all")
+                    Text("Enter adds to queue — Shift+Enter for a new line")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 ZStack(alignment: .topLeading) {
@@ -83,6 +83,12 @@ struct ContentView: View {
                         .frame(minHeight: 64, maxHeight: 120)
                         .focused($queryFocused)
                         .scrollContentBackground(.hidden)
+                        .onKeyPress(keys: [.return], phases: .down) { press in
+                            // Shift+Enter falls through to TextEditor and inserts a newline.
+                            if press.modifiers.contains(.shift) { return .ignored }
+                            addToQueueOrDownload()
+                            return .handled
+                        }
                 }
                 .padding(4)
                 .background(
