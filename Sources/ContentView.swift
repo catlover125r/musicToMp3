@@ -8,11 +8,24 @@ enum AppStatus {
     case failed(String)
 }
 
+struct QueueItem: Identifiable {
+    let id = UUID()
+    let query: String
+    let appleMusicURL: String
+    var outputDir: String? = nil
+
+    var displayLabel: String {
+        if !query.isEmpty { return query }
+        return appleMusicURL
+    }
+}
+
 struct ContentView: View {
     @State private var query = ""
     @State private var appleMusicURL = ""
     @State private var appStatus: AppStatus = .idle
     @State private var history: [String] = []
+    @State private var downloadQueue: [QueueItem] = []
     @FocusState private var queryFocused: Bool
 
     private var isBusy: Bool {
@@ -20,10 +33,10 @@ struct ContentView: View {
         return false
     }
 
-    private var canDownload: Bool {
+    private var canAdd: Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
         let a = appleMusicURL.trimmingCharacters(in: .whitespaces)
-        return (!q.isEmpty || !a.isEmpty) && !isBusy
+        return !q.isEmpty || !a.isEmpty
     }
 
     var body: some View {
@@ -44,15 +57,39 @@ struct ContentView: View {
 
             Divider()
 
-            // Search field
+            // Search field (multiline — one song per line)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Search")
-                    .font(.caption).fontWeight(.medium).foregroundColor(.secondary)
-                TextField("Artist – Song title, or paste a YouTube URL…", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($queryFocused)
-                    .onSubmit { startDownload() }
-                    .disabled(isBusy)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Search")
+                        .font(.caption).fontWeight(.medium).foregroundColor(.secondary)
+                    Spacer()
+                    Text("One song per line — Enter adds a line, button submits all")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                ZStack(alignment: .topLeading) {
+                    if query.isEmpty {
+                        Text("Artist – Song title, or paste a YouTube URL…")
+                            .foregroundColor(Color(nsColor: .placeholderTextColor))
+                            .font(.body)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $query)
+                        .font(.body)
+                        .frame(minHeight: 64, maxHeight: 120)
+                        .focused($queryFocused)
+                        .scrollContentBackground(.hidden)
+                }
+                .padding(4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
             }
 
             // Apple Music field
@@ -62,8 +99,7 @@ struct ContentView: View {
                 HStack(spacing: 6) {
                     TextField("https://music.apple.com/…", text: $appleMusicURL)
                         .textFieldStyle(.roundedBorder)
-                        .onSubmit { startDownload() }
-                        .disabled(isBusy)
+                        .onSubmit { addToQueueOrDownload() }
                     Button {
                         if let text = NSPasteboard.general.string(forType: .string) {
                             appleMusicURL = text
@@ -72,7 +108,6 @@ struct ContentView: View {
                         Label("Paste", systemImage: "doc.on.clipboard")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isBusy)
                     if !appleMusicURL.isEmpty {
                         Button {
                             appleMusicURL = ""
@@ -88,27 +123,81 @@ struct ContentView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Download button
-            Button(action: startDownload) {
-                if isBusy {
-                    HStack(spacing: 6) {
-                        ProgressView().scaleEffect(0.75)
-                        Text("Working…")
-                    }
-                    .frame(maxWidth: .infinity)
-                } else {
-                    Label("Download", systemImage: "arrow.down.circle.fill")
+            // Action buttons — main (6/7) + choose-location (1/7)
+            GeometryReader { geo in
+                HStack(spacing: 6) {
+                    Button(action: addToQueueOrDownload) {
+                        Group {
+                            if isBusy {
+                                HStack(spacing: 6) {
+                                    ProgressView().scaleEffect(0.75)
+                                    Text("Add to Queue")
+                                }
+                            } else {
+                                Label("Download", systemImage: "arrow.down.circle.fill")
+                            }
+                        }
                         .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!canAdd)
+                    .frame(width: (geo.size.width - 6) * 6 / 7)
+
+                    Button(action: addWithLocationPicker) {
+                        Image(systemName: "folder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!canAdd)
+                    .frame(width: (geo.size.width - 6) * 1 / 7)
+                    .help("Download and choose where to save")
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!canDownload)
+            .frame(height: 38)
 
             // Status
             statusView
                 .font(.callout)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Queue
+            if !downloadQueue.isEmpty {
+                Divider()
+                HStack {
+                    Text("Up Next (\(downloadQueue.count))")
+                        .font(.subheadline).fontWeight(.medium)
+                    Spacer()
+                    Button("Clear") {
+                        downloadQueue.removeAll()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+                ForEach(downloadQueue) { item in
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(item.displayLabel)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button {
+                            downloadQueue.removeAll { $0.id == item.id }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
 
             // History
             if !history.isEmpty {
@@ -138,7 +227,7 @@ struct ContentView: View {
             Spacer()
         }
         .padding(22)
-        .frame(minWidth: 500, idealWidth: 520, minHeight: 360)
+        .frame(minWidth: 500, idealWidth: 520, minHeight: 420)
         .onAppear { queryFocused = true }
     }
 
@@ -162,16 +251,88 @@ struct ContentView: View {
         }
     }
 
-    private func startDownload() {
-        guard canDownload else { return }
-        let rawQuery = query.trimmingCharacters(in: .whitespaces)
+    private func addToQueueOrDownload() {
+        guard canAdd else { return }
+
+        // Split search field by newlines; each non-empty line is a separate song
+        let lines = query
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
         let rawAM = appleMusicURL.trimmingCharacters(in: .whitespaces)
 
         query = ""
+        appleMusicURL = ""
+
+        // Build the full list of items to enqueue (Apple Music link only pairs with the first line, or alone)
+        var items: [QueueItem] = []
+        if lines.isEmpty {
+            // Apple Music link only
+            if !rawAM.isEmpty { items.append(QueueItem(query: "", appleMusicURL: rawAM)) }
+        } else {
+            // First line gets the Apple Music URL if provided
+            items.append(QueueItem(query: lines[0], appleMusicURL: rawAM))
+            for line in lines.dropFirst() {
+                items.append(QueueItem(query: line, appleMusicURL: ""))
+            }
+        }
+
+        guard !items.isEmpty else { return }
+
+        if isBusy {
+            downloadQueue.append(contentsOf: items)
+        } else {
+            let first = items[0]
+            downloadQueue.append(contentsOf: items.dropFirst())
+            startDownload(query: first.query, appleMusicURL: first.appleMusicURL)
+        }
+    }
+
+    private func addWithLocationPicker() {
+        guard canAdd else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Save Location"
+        panel.message = "Select the folder where the MP3(s) will be saved"
+        guard panel.runModal() == .OK, let dir = panel.url?.path else { return }
+
+        let lines = query
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let rawAM = appleMusicURL.trimmingCharacters(in: .whitespaces)
+
+        query = ""
+        appleMusicURL = ""
+
+        var items: [QueueItem] = []
+        if lines.isEmpty {
+            if !rawAM.isEmpty { items.append(QueueItem(query: "", appleMusicURL: rawAM, outputDir: dir)) }
+        } else {
+            items.append(QueueItem(query: lines[0], appleMusicURL: rawAM, outputDir: dir))
+            for line in lines.dropFirst() {
+                items.append(QueueItem(query: line, appleMusicURL: "", outputDir: dir))
+            }
+        }
+
+        guard !items.isEmpty else { return }
+
+        if isBusy {
+            downloadQueue.append(contentsOf: items)
+        } else {
+            let first = items[0]
+            downloadQueue.append(contentsOf: items.dropFirst())
+            startDownload(query: first.query, appleMusicURL: first.appleMusicURL, outputDir: first.outputDir)
+        }
+    }
+
+    private func startDownload(query rawQuery: String, appleMusicURL rawAM: String, outputDir: String? = nil) {
         appStatus = .busy("Starting…")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            // If Apple Music URL is provided, resolve it first
             var searchQuery = rawQuery
             if !rawAM.isEmpty {
                 DispatchQueue.main.async { appStatus = .busy("Looking up track info from Apple Music…") }
@@ -179,26 +340,34 @@ struct ContentView: View {
                     searchQuery = "\(info.artist) \(info.title)"
                     DispatchQueue.main.async { appStatus = .busy("Found \"\(info.title)\" — downloading…") }
                 } else if rawQuery.isEmpty {
-                    DispatchQueue.main.async { appStatus = .failed("Couldn't read that Apple Music link — try the search field instead") }
+                    DispatchQueue.main.async {
+                        appStatus = .failed("Couldn't read that Apple Music link — try the search field instead")
+                        drainQueue()
+                    }
                     return
                 }
-                // if lookup failed but rawQuery is set, fall through to rawQuery
             } else {
                 DispatchQueue.main.async { appStatus = .busy("Searching for \"\(searchQuery)\"…") }
             }
 
-            let result = ytDownload(searchQuery)
+            let result = ytDownload(searchQuery, outputDir: outputDir)
             DispatchQueue.main.async {
                 if let name = result.file {
                     history.insert(name, at: 0)
-                    appleMusicURL = ""
                     appStatus = .done("Saved: \(name)")
                 } else {
                     appStatus = .failed(result.error ?? "Unknown error")
                 }
                 queryFocused = true
+                drainQueue()
             }
         }
+    }
+
+    private func drainQueue() {
+        guard !downloadQueue.isEmpty else { return }
+        let next = downloadQueue.removeFirst()
+        startDownload(query: next.query, appleMusicURL: next.appleMusicURL, outputDir: next.outputDir)
     }
 }
 
@@ -249,7 +418,7 @@ struct YTResult {
     var error: String?
 }
 
-func ytDownload(_ query: String) -> YTResult {
+func ytDownload(_ query: String, outputDir: String? = nil) -> YTResult {
     let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
 
     func find(_ bin: String) -> String? {
@@ -269,7 +438,7 @@ func ytDownload(_ query: String) -> YTResult {
 
     let fm = FileManager.default
     let downloadsURL = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-    let downloads = downloadsURL.path
+    let downloads = outputDir ?? downloadsURL.path
     let ffmpegDir = (ffmpeg as NSString).deletingLastPathComponent
 
     let isURL = query.hasPrefix("http://") || query.hasPrefix("https://")
@@ -310,13 +479,11 @@ func ytDownload(_ query: String) -> YTResult {
         return YTResult(error: "Download failed — \(hint)")
     }
 
-    // yt-dlp prints the final filepath via --print after_move:%(filepath)s
     let printed = outText.components(separatedBy: .newlines).first(where: { !$0.isEmpty }) ?? ""
     if !printed.isEmpty {
         return YTResult(file: (printed as NSString).lastPathComponent)
     }
 
-    // Fallback: scan Downloads for newest .mp3
     let contents = (try? fm.contentsOfDirectory(atPath: downloads)) ?? []
     let newest = contents
         .filter { $0.hasSuffix(".mp3") }
