@@ -26,6 +26,9 @@ struct ContentView: View {
     @State private var appStatus: AppStatus = .idle
     @State private var history: [String] = []
     @State private var downloadQueue: [QueueItem] = []
+    @StateObject private var installer = ToolInstaller()
+    @State private var showSetup = false
+    @State private var setupTools: [String] = []
     @FocusState private var queryFocused: Bool
 
     private var isBusy: Bool {
@@ -228,7 +231,17 @@ struct ContentView: View {
         }
         .padding(22)
         .frame(minWidth: 500, idealWidth: 520, minHeight: 420)
-        .onAppear { queryFocused = true }
+        .onAppear {
+            queryFocused = true
+            promptForToolsIfNeeded()
+        }
+        .sheet(isPresented: $showSetup) {
+            SetupView(installer: installer, tools: setupTools) {
+                showSetup = false
+                installer.state = .idle
+                queryFocused = true
+            }
+        }
     }
 
     @ViewBuilder
@@ -251,8 +264,20 @@ struct ContentView: View {
         }
     }
 
+    /// Shows the one-time setup popup when yt-dlp or ffmpeg can't be found.
+    @discardableResult
+    private func promptForToolsIfNeeded() -> Bool {
+        let missing = Tools.missing
+        guard !missing.isEmpty else { return false }
+        setupTools = missing
+        installer.state = .idle
+        showSetup = true
+        return true
+    }
+
     private func addToQueueOrDownload() {
         guard canAdd else { return }
+        if promptForToolsIfNeeded() { return }
 
         // Split search field by newlines; each non-empty line is a separate song
         let lines = query
@@ -291,6 +316,7 @@ struct ContentView: View {
 
     private func addWithLocationPicker() {
         guard canAdd else { return }
+        if promptForToolsIfNeeded() { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -419,21 +445,11 @@ struct YTResult {
 }
 
 func ytDownload(_ query: String, outputDir: String? = nil) -> YTResult {
-    let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
-
-    func find(_ bin: String) -> String? {
-        for dir in searchPaths {
-            let p = "\(dir)/\(bin)"
-            if FileManager.default.fileExists(atPath: p) { return p }
-        }
-        return nil
+    guard let ytdlp = Tools.find("yt-dlp") else {
+        return YTResult(error: "yt-dlp is missing — restart the app to download it")
     }
-
-    guard let ytdlp = find("yt-dlp") else {
-        return YTResult(error: "yt-dlp not found — open Terminal and run: brew install yt-dlp")
-    }
-    guard let ffmpeg = find("ffmpeg") else {
-        return YTResult(error: "ffmpeg not found — open Terminal and run: brew install ffmpeg")
+    guard let ffmpeg = Tools.find("ffmpeg") else {
+        return YTResult(error: "ffmpeg is missing — restart the app to download it")
     }
 
     let fm = FileManager.default
@@ -475,7 +491,7 @@ func ytDownload(_ query: String, outputDir: String? = nil) -> YTResult {
         let errText = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let hint = errText.contains("Unable to download") || errText.contains("No video formats")
             ? "Couldn't find that track — try a different search"
-            : "Try: brew upgrade yt-dlp"
+            : "yt-dlp may be out of date"
         return YTResult(error: "Download failed — \(hint)")
     }
 
